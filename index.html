@@ -1,0 +1,455 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<title>Marathon Pace Planner</title>
+<style>
+body{font-family:sans-serif;max-width:1200px;margin:auto;padding:24px;background:#fafafa;color:#222}
+.card{background:white;border:1px solid #ddd;border-radius:12px;padding:20px;margin-bottom:20px}
+.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
+.two-col{display:grid;grid-template-columns:2fr 1fr;gap:20px;align-items:start}
+label{font-weight:bold}
+select,input,textarea,button{width:100%;padding:10px;margin-top:6px;box-sizing:border-box}
+textarea{height:300px;font-family:monospace}
+button{font-size:16px;border:0;border-radius:8px;background:#222;color:white;cursor:pointer;margin-top:10px}
+.secondary{background:#666}
+.guide{background:#f5f8ff;border-left:4px solid #2f6fed;padding:14px;border-radius:8px;font-size:13px;line-height:1.7}
+.flow{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:12px}
+.flow div{background:white;border:1px solid #d9e4ff;border-radius:10px;padding:12px;text-align:center;font-size:13px;line-height:1.5}
+.side-note{background:#f7f7f7;border-radius:10px;padding:14px;font-size:13px;line-height:1.7}
+.formula{background:#fff;border:1px solid #ddd;border-radius:8px;padding:10px;margin-top:8px;font-family:monospace;font-size:12px}
+.sample-note{font-size:12px;color:#666;line-height:1.6;margin-top:8px}
+.error{display:none;background:#fff0f0;border-left:4px solid #d33;padding:12px;border-radius:8px;color:#900;margin-top:12px}
+.range-labels{display:flex;justify-content:space-between;font-size:12px;color:#666}
+.summary{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+.summary div{background:#f3f3f3;border-radius:10px;padding:12px}
+table{border-collapse:collapse;width:100%;font-size:13px;background:white}
+th,td{border:1px solid #ddd;padding:6px;text-align:right}
+th{background:#eee}
+.left{text-align:left}
+.small{font-size:12px;color:#666}
+canvas{width:100%;height:420px;border:1px solid #ddd;border-radius:8px;background:white}
+</style>
+</head>
+
+<body>
+
+<h1>Marathon Pace Planner</h1>
+
+<div class="card">
+<h2>1. 目標タイム入力</h2>
+<div class="grid">
+  <div><label>時間</label><select id="targetHour"></select></div>
+  <div><label>分</label><select id="targetMinute"></select></div>
+  <div><label>秒</label><select id="targetSecond"></select></div>
+</div>
+</div>
+
+<div class="card">
+<h2>2. ペース戦略</h2>
+<input id="strategy" type="range" min="-10" max="10" step="1" value="0" oninput="updateStrategyLabel()">
+<div class="range-labels">
+  <span>後半型</span>
+  <span id="strategyLabel">イーブン（0秒/km）</span>
+  <span>前半型</span>
+</div>
+</div>
+
+<div class="card">
+<h2>3. 標高表入力</h2>
+
+<div class="guide">
+<b>高低図から標高表を作る流れ</b>
+
+<div class="flow">
+  <div>① 大会HPなどで<br>高低図を用意</div>
+  <div>② ChatGPTに<br>画像をアップロード</div>
+  <div>③ 1kmごとの<br>標高表を生成</div>
+  <div>④ 下の入力欄へ<br>貼り付け</div>
+</div>
+
+<p>
+プロンプト例：<br>
+「添付したマラソン大会の高低図画像を読み取り、1kmごとの標高を推定してください。
+0km〜42kmおよび42.195kmを出力してください。列名は km と elevation_m。説明文は不要です。」
+</p>
+</div>
+
+<br>
+
+<div class="grid">
+  <div>
+    <label>サンプルコース</label>
+    <select id="sampleCourse">
+      <option value="">選択してください</option>
+      <option value="flat">フラットコース</option>
+      <option value="tokyo">東京マラソン</option>
+      <option value="osaka">大阪マラソン</option>
+      <option value="nagoya">名古屋ウィメンズマラソン</option>
+    </select>
+    <button class="secondary" onclick="loadSample()">サンプル読込</button>
+    <div class="sample-note">
+      まずはサンプルコースを読み込むと、標高表を用意しなくても動作確認できます。<br>
+      自分の大会で使う場合は、下の標高表を差し替えてください。
+    </div>
+  </div>
+</div>
+
+<br>
+
+<div class="two-col">
+  <div>
+    <label>標高表（km,elevation_m）</label>
+    <p class="small">例：0,10 / 1,4 / 2,3 のように1行ずつ入力</p>
+    <textarea id="elevationData"></textarea>
+  </div>
+
+  <div class="side-note">
+    <b>勾配補正の設定</b><br>
+    上りはペースを遅く、下りはペースを速く補正します。通常は初期値のままでOKです。<br><br>
+
+    <b>計算の考え方</b>
+    <div class="formula">
+Minetti生係数
+= 勾配別エネルギーコスト ÷ 平地コスト
+
+MVP勾配係数
+= 1 + (Minetti生係数 - 1) × 補正強度
+    </div>
+
+    <p class="small">
+      Minetti式は勾配に応じたランニングのエネルギーコストを表す近似式です。
+      ただし、そのまま使うと補正が強く出やすいため、本アプリでは「補正強度」と「上下限」で実用向けに丸めています。
+    </p>
+
+    <label>上り補正強度</label>
+    <input id="uphillStrength" type="number" step="0.01" value="0.60">
+
+    <label>下り補正強度</label>
+    <input id="downhillStrength" type="number" step="0.01" value="0.40">
+
+    <label>上り補正上限</label>
+    <input id="uphillMax" type="number" step="0.01" value="1.10">
+
+    <label>下り補正下限</label>
+    <input id="downhillMin" type="number" step="0.01" value="0.93">
+  </div>
+</div>
+
+<div id="errorBox" class="error"></div>
+
+<button onclick="generate()">ラップ生成</button>
+</div>
+
+<div class="card">
+<h2>4. 出力結果：サマリー</h2>
+<div id="summary" class="summary"></div>
+</div>
+
+<div class="card">
+<h2>5. 出力結果：ラップ表</h2>
+<table id="resultTable">
+<thead>
+<tr>
+<th class="left">区間</th>
+<th>距離km</th>
+<th>始点標高m</th>
+<th>終点標高m</th>
+<th>標高差m</th>
+<th>勾配%</th>
+<th>MVP勾配係数</th>
+<th>戦略補正</th>
+<th>推奨ラップ</th>
+<th>累計</th>
+</tr>
+</thead>
+<tbody></tbody>
+</table>
+<button class="secondary" onclick="downloadCSV()">CSVダウンロード</button>
+</div>
+
+<div class="card">
+<h2>6. 出力結果：グラフ</h2>
+<p class="small">横軸：距離 / 左軸：標高 / 右軸：推奨ペース</p>
+<canvas id="chart" width="1100" height="420"></canvas>
+</div>
+
+<script>
+let latestRows=[];
+
+const samples={
+flat:`0,5
+1,5
+2,5
+3,5
+4,5
+5,5
+6,5
+7,5
+8,5
+9,5
+10,5
+11,5
+12,5
+13,5
+14,5
+15,5
+16,5
+17,5
+18,5
+19,5
+20,5
+21,5
+22,5
+23,5
+24,5
+25,5
+26,5
+27,5
+28,5
+29,5
+30,5
+31,5
+32,5
+33,5
+34,5
+35,5
+36,5
+37,5
+38,5
+39,5
+40,5
+41,5
+42,5
+42.195,5`,
+tokyo:`0,40
+1,38
+2,36
+3,35
+4,25
+5,18
+6,12
+7,7
+8,5
+9,4
+10,5
+11,4
+12,4
+13,5
+14,5
+15,4
+16,4
+17,5
+18,6
+19,5
+20,4
+21,4
+22,4
+23,3
+24,3
+25,3
+26,4
+27,3
+28,6
+29,4
+30,4
+31,4
+32,4
+33,4
+34,4
+35,4
+36,4
+37,4
+38,4
+39,4
+40,4
+41,4
+42,4
+42.195,4`,
+osaka:`0,12
+1,2
+2,2
+3,2
+4,2
+5,3
+6,4
+7,4
+8,3
+9,3
+10,3
+11,2
+12,2
+13,2
+14,2
+15,1
+16,1
+17,1
+18,1
+19,1
+20,1
+21,1
+22,1
+23,1
+24,1
+25,1
+26,1
+27,2
+28,3
+29,4
+30,5
+31,18
+32,20
+33,18
+34,8
+35,4
+36,3
+37,2
+38,2
+39,2
+40,2
+41,3
+42,5
+42.195,5`,
+nagoya:`0,4
+1,6
+2,6
+3,6
+4,5
+5,4
+6,3
+7,0
+8,-2
+9,-3
+10,-2
+11,0
+12,4
+13,6
+14,6
+15,5
+16,3
+17,2
+18,4
+19,2
+20,-2
+21,0
+22,-1
+23,1
+24,-1
+25,2
+26,3
+27,4
+28,-1
+29,-2
+30,-3
+31,-3
+32,-2
+33,4
+34,3
+35,2
+36,3
+37,4
+38,5
+39,6
+40,7
+41,6
+42,4
+42.195,4`
+};
+
+function initSelectors(){
+ const h=document.getElementById("targetHour"),m=document.getElementById("targetMinute"),s=document.getElementById("targetSecond");
+ for(let i=2;i<=6;i++)h.innerHTML+=`<option value="${i}">${i}時間</option>`;
+ for(let i=0;i<60;i++){m.innerHTML+=`<option value="${i}">${i}分</option>`;s.innerHTML+=`<option value="${i}">${i}秒</option>`;}
+ h.value=3;m.value=30;s.value=0;
+}
+
+function showError(msg){const b=document.getElementById("errorBox");b.innerHTML=msg;b.style.display="block";}
+function clearError(){const b=document.getElementById("errorBox");b.innerHTML="";b.style.display="none";}
+function loadSample(){const k=document.getElementById("sampleCourse").value;if(!k)return;document.getElementById("elevationData").value=samples[k];generate();}
+function updateStrategyLabel(){const v=Number(document.getElementById("strategy").value),l=document.getElementById("strategyLabel");l.textContent=v>0?`前半型（±${v}秒/km）`:v<0?`後半型（±${Math.abs(v)}秒/km）`:"イーブン（0秒/km）";}
+function targetTimeSec(){return Number(targetHour.value)*3600+Number(targetMinute.value)*60+Number(targetSecond.value);}
+function secToTime(sec){sec=Math.round(sec);const h=Math.floor(sec/3600),m=Math.floor((sec%3600)/60),s=sec%60;return h>0?`${h}:${String(m).padStart(2,"0")}:${String(s).padStart(2,"0")}`:`${m}:${String(s).padStart(2,"0")}`;}
+
+function minettiCoefficient(g){return(155.4*g**5-30.4*g**4-43.3*g**3+46.3*g**2+19.5*g+3.6)/3.6;}
+function mvpCoefficient(m,u,d,um,dm){return m>=1?Math.min(1+(m-1)*u,um):Math.max(1-(1-m)*d,dm);}
+
+function parseElevationData(text){
+ const lines=text.trim().split(/\n/).map(r=>r.trim()).filter(Boolean),data=[];
+ if(lines.length<2)throw new Error("標高データを2行以上入力してください。");
+ for(let i=0;i<lines.length;i++){
+  let line=lines[i].replace(/\|/g,",");
+  const c=line.split(/[,\t]/).map(v=>v.trim()).filter(Boolean);
+  if(c[0]?.toLowerCase()==="km")continue;
+  if(c.length<2)throw new Error(`${i+1}行目の形式が不正です。「距離,標高」の形で入力してください。`);
+  const km=Number(c[0]),elev=Number(c[1]);
+  if(isNaN(km)||isNaN(elev))throw new Error(`${i+1}行目に数値ではない値があります。例：1,4`);
+  data.push({km,elev});
+ }
+ if(data.length<2)throw new Error("有効な標高データが2行以上必要です。");
+ for(let i=1;i<data.length;i++)if(data[i].km<=data[i-1].km)throw new Error("距離kmは上から順に増加する必要があります。");
+ if(Math.abs(data[data.length-1].km-42.195)>0.01)throw new Error("最終行は 42.195km にしてください。");
+ return data;
+}
+
+function generate(){
+ clearError();
+ try{
+  const targetSec=targetTimeSec(),strategyMax=Number(strategy.value);
+  const u=Number(uphillStrength.value),d=Number(downhillStrength.value),um=Number(uphillMax.value),dm=Number(downhillMin.value);
+  const data=parseElevationData(elevationData.value);
+  const totalDistance=data[data.length-1].km,basePace=targetSec/totalDistance;
+  let laps=[];
+  for(let i=0;i<data.length-1;i++){
+   const start=data[i],end=data[i+1],dist=end.km-start.km,elevDiff=end.elev-start.elev,grade=elevDiff/(dist*1000);
+   const minetti=minettiCoefficient(grade),mvp=mvpCoefficient(minetti,u,d,um,dm);
+   const strategySec=-strategyMax+2*strategyMax*(i/(data.length-2));
+   const adjustedPace=basePace*mvp+strategySec;
+   laps.push({start,end,dist,elevDiff,grade,mvp,strategySec,adjustedPace,provisionalLapSec:adjustedPace*dist});
+  }
+  const normalizationFactor=targetSec/laps.reduce((sum,r)=>sum+r.provisionalLapSec,0);
+  let cumulative=0;latestRows=[];
+  const tbody=document.querySelector("#resultTable tbody");tbody.innerHTML="";
+  laps.forEach(r=>{
+   const finalPace=r.adjustedPace*normalizationFactor,finalLapSec=finalPace*r.dist;cumulative+=finalLapSec;
+   const row={section:`${r.start.km} - ${r.end.km}`,distance_km:r.dist.toFixed(3),start_elevation_m:r.start.elev.toFixed(1),end_elevation_m:r.end.elev.toFixed(1),elevation_diff_m:r.elevDiff.toFixed(1),grade_percent:(r.grade*100).toFixed(2),mvp_coefficient:r.mvp.toFixed(3),strategy_sec_per_km:r.strategySec.toFixed(1),recommended_lap:secToTime(finalLapSec),cumulative_time:secToTime(cumulative),km_end:r.end.km,elevation:r.end.elev,finalPaceSec:finalPace};
+   latestRows.push(row);
+   tbody.innerHTML+=`<tr><td class="left">${row.section}</td><td>${row.distance_km}</td><td>${row.start_elevation_m}</td><td>${row.end_elevation_m}</td><td>${row.elevation_diff_m}</td><td>${row.grade_percent}</td><td>${row.mvp_coefficient}</td><td>${row.strategy_sec_per_km}</td><td>${row.recommended_lap}</td><td>${row.cumulative_time}</td></tr>`;
+  });
+  summary.innerHTML=`<div><b>目標タイム</b><br>${secToTime(targetSec)}</div><div><b>総距離</b><br>${totalDistance.toFixed(3)} km</div><div><b>平地基準ペース</b><br>${secToTime(basePace)} /km</div><div><b>ペース戦略</b><br>${strategyLabel.textContent}</div><div><b>最終累計</b><br>${secToTime(cumulative)}</div>`;
+  drawChart(data,latestRows);
+ }catch(e){showError(e.message);}
+}
+
+function drawChart(data,rows){
+ const canvas=document.getElementById("chart"),ctx=canvas.getContext("2d");ctx.clearRect(0,0,canvas.width,canvas.height);
+ const w=canvas.width,h=canvas.height,padL=70,padR=80,padT=35,padB=55,plotW=w-padL-padR,plotH=h-padT-padB,maxKm=data[data.length-1].km;
+ const elevVals=data.map(d=>d.elev),minElev=Math.floor(Math.min(...elevVals)/10)*10,maxElev=Math.ceil(Math.max(...elevVals)/10)*10||10;
+ const paceVals=rows.map(r=>r.finalPaceSec),minPace=Math.floor(Math.min(...paceVals)/10)*10,maxPace=Math.ceil(Math.max(...paceVals)/10)*10;
+ const x=km=>padL+(km/maxKm)*plotW,yElev=e=>padT+(maxElev-e)/(maxElev-minElev||1)*plotH,yPace=p=>padT+(p-minPace)/(maxPace-minPace||1)*plotH;
+ ctx.fillStyle="#fff";ctx.fillRect(0,0,w,h);ctx.strokeStyle="#ddd";ctx.lineWidth=1;ctx.fillStyle="#666";ctx.font="12px sans-serif";
+ for(let km=0;km<=40;km+=5){const xx=x(km);ctx.beginPath();ctx.moveTo(xx,padT);ctx.lineTo(xx,h-padB);ctx.stroke();ctx.fillText(km+"km",xx-12,h-28);}
+ ctx.fillText("42.195km",x(maxKm)-25,h-28);
+ for(let i=0;i<=4;i++){const val=minElev+(maxElev-minElev)/4*i,yy=yElev(val);ctx.beginPath();ctx.moveTo(padL,yy);ctx.lineTo(w-padR,yy);ctx.stroke();ctx.fillStyle="#2f6fed";ctx.fillText(Math.round(val)+"m",18,yy+4);}
+ for(let i=0;i<=4;i++){const val=minPace+(maxPace-minPace)/4*i,yy=yPace(val);ctx.fillStyle="#d65a31";ctx.fillText(secToTime(val)+"/km",w-padR+12,yy+4);}
+ ctx.strokeStyle="#999";ctx.beginPath();ctx.moveTo(padL,padT);ctx.lineTo(padL,h-padB);ctx.lineTo(w-padR,h-padB);ctx.lineTo(w-padR,padT);ctx.stroke();
+ ctx.beginPath();ctx.moveTo(x(data[0].km),yElev(data[0].elev));data.forEach(d=>ctx.lineTo(x(d.km),yElev(d.elev)));ctx.strokeStyle="#2f6fed";ctx.lineWidth=2;ctx.stroke();
+ ctx.beginPath();ctx.moveTo(x(rows[0].km_end),yPace(rows[0].finalPaceSec));rows.forEach(r=>ctx.lineTo(x(r.km_end),yPace(r.finalPaceSec)));ctx.strokeStyle="#d65a31";ctx.lineWidth=2;ctx.stroke();
+ ctx.font="14px sans-serif";ctx.fillStyle="#2f6fed";ctx.fillText("標高（m）",padL,22);ctx.fillStyle="#d65a31";ctx.fillText("推奨ペース（min/km）",w-padR-110,22);ctx.fillStyle="#333";ctx.fillText("距離（km）",w/2-30,h-8);
+}
+
+function downloadCSV(){
+ if(latestRows.length===0)generate();
+ const headers=["section","distance_km","start_elevation_m","end_elevation_m","elevation_diff_m","grade_percent","mvp_coefficient","strategy_sec_per_km","recommended_lap","cumulative_time"];
+ const csv=[headers.join(","),...latestRows.map(r=>headers.map(h=>r[h]).join(","))].join("\n");
+ const blob=new Blob(["\uFEFF"+csv],{type:"text/csv;charset=utf-8;"});
+ const url=URL.createObjectURL(blob),a=document.createElement("a");a.href=url;a.download="marathon_pace_plan.csv";a.click();URL.revokeObjectURL(url);
+}
+
+initSelectors();
+updateStrategyLabel();
+elevationData.value=samples.tokyo;
+generate();
+</script>
+
+</body>
+</html>
